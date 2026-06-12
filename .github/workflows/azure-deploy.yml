@@ -54,7 +54,7 @@ jobs:
     needs: build
     environment:
       name: 'Production'
-      url: ${{ steps.deploy-to-webapp.outputs.webapp-url }}
+      url: ${{ steps.deploy-token.outputs.webapp-url || steps.deploy-publish-profile.outputs.webapp-url }}
 
     steps:
       - name: Download Build Artifacts
@@ -63,8 +63,27 @@ jobs:
           name: node-app
           path: .
 
-      - name: Deploy to Azure Web App
-        id: deploy-to-webapp
+      # Scenario A: Modern Token Authentication using Service Principal credentials.
+      # Bypasses "Forbidden from extensions API" error caused by disabled Web App Publishing Basic Auth (SCM).
+      - name: Log in to Azure
+        if: ${{ secrets.AZURE_CREDENTIALS != '' }}
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Deploy to Azure Web App (Token Auth)
+        id: deploy-token
+        if: ${{ secrets.AZURE_CREDENTIALS != '' }}
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: 'one-earth'
+          package: .
+
+      # Scenario B: Classic Publish Profile-based deployment.
+      # Only runs if AZURE_CREDENTIALS secret is not defined, relying on SCM basic auth.
+      - name: Deploy to Azure Web App (Publish Profile Auth)
+        id: deploy-publish-profile
+        if: ${{ secrets.AZURE_CREDENTIALS == '' }}
         uses: azure/webapps-deploy@v3
         with:
           app-name: 'one-earth'
