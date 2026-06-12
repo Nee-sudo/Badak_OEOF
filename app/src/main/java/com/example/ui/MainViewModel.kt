@@ -1,10 +1,18 @@
 package com.example.ui
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.NotificationEntity
 import com.example.data.OeofRepository
 import com.example.data.UserStatsEntity
+import com.example.data.api.OeofApiService
+import com.example.data.api.AuthRequest
+import com.example.data.api.CreatePostRequest
+import com.example.data.api.ReactRequest
+import com.example.data.api.VoteRequest
+import com.example.data.api.OeofWebSocketClient
+import com.example.data.api.OeofWebSocketListener
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
@@ -84,6 +92,72 @@ data class ChatConnection(
 )
 
 class MainViewModel(private val repository: OeofRepository) : ViewModel() {
+
+    // Dynamic Backend Communication Configs
+    private val _backendUrl = MutableStateFlow("https://one-earth-dadyagc7bcc9hpcb.eastasia-01.azurewebsites.net")
+    val backendUrl: StateFlow<String> = _backendUrl.asStateFlow()
+
+    var apiService = OeofApiService.create(_backendUrl.value)
+        private set
+    private var webSocketClient: OeofWebSocketClient? = null
+
+    fun updateBackendUrl(newUrl: String) {
+        val formatted = newUrl.trim().removeSuffix("/")
+        if (formatted.isNotEmpty() && formatted != _backendUrl.value) {
+            _backendUrl.value = formatted
+            apiService = OeofApiService.create(formatted)
+            reconnectWebSocket()
+            syncFromBackend()
+        }
+    }
+
+    private fun reconnectWebSocket() {
+        viewModelScope.launch {
+            try {
+                webSocketClient?.disconnect()
+                webSocketClient = null
+                val currentUser = repository.fetchOrCreateUser()
+                val currentId = currentUser.id
+                if (currentId == "current_user") return@launch
+
+                val wsUrl = if (_backendUrl.value.startsWith("https://")) {
+                    _backendUrl.value.replace("https://", "wss://")
+                } else {
+                    _backendUrl.value.replace("http://", "ws://")
+                }
+
+                webSocketClient = OeofWebSocketClient(wsUrl, currentId, object : OeofWebSocketListener {
+                    override fun onConnected() {
+                        Log.d("OeofViewModel", "Live WebSockets connection established on $wsUrl")
+                    }
+
+                    override fun onDisconnected() {
+                        Log.d("OeofViewModel", "Live WebSockets disconnected.")
+                    }
+
+                    override fun onMessageReceived(senderId: String, content: String, roomId: String) {
+                        viewModelScope.launch {
+                            repository.insertNotification(
+                                NotificationEntity(
+                                    title = "Message from Scholar @$senderId",
+                                    body = content,
+                                    type = "MESSAGE"
+                                )
+                            )
+                        }
+                    }
+
+                    override fun onMessageAck(messageId: String, roomId: String, status: String) {
+                        Log.d("OeofViewModel", "Message receipt $messageId: $status")
+                    }
+                }).apply {
+                    connect()
+                }
+            } catch (e: Exception) {
+                Log.e("OeofViewModel", "WebSocket connection failure: ${e.message}")
+            }
+        }
+    }
 
     // Main navigation flow state
     private val _currentScreen = MutableStateFlow(Screen.SPLASH)
@@ -191,6 +265,63 @@ class MainViewModel(private val repository: OeofRepository) : ViewModel() {
         viewModelScope.launch {
             repository.fetchOrCreateUser()
             seedCoreContent()
+            syncFromBackend()
+            reconnectWebSocket()
+        }
+    }
+
+    fun syncFromBackend() {
+        viewModelScope.launch {
+            try {
+                Log.d("OeofViewModel", "Attempting synchronization with Cloud DB...")
+                val feedResult = apiService.getPosts()
+                val mappedPosts = feedResult.posts.map { netPost ->
+                    Post(
+                        id = netPost.id,
+                        author = netPost.author,
+                        username = netPost.username,
+                        avatarInitials = netPost.avatarInitials,
+                        territory = netPost.territory,
+                        flag = netPost.flag,
+                        rank = netPost.rank,
+                        message = netPost.message,
+                        type = netPost.type,
+                        timeAgo = netPost.timeAgo,
+                        wiseCount = netPost.wiseCount,
+                        helpfulCount = netPost.helpfulCount,
+                        inspiringCount = netPost.inspiringCount,
+                        creativeCount = netPost.creativeCount,
+                        valuableCount = netPost.valuableCount,
+                        commentsCount = netPost.commentsCount,
+                        isPoll = netPost.isPoll,
+                        pollOptions = netPost.pollOptions,
+                        pollVotes = netPost.pollVotes
+                    )
+                }
+                if (mappedPosts.isNotEmpty()) {
+                    _posts.value = mappedPosts
+                }
+
+                val candidatesResult = apiService.getCandidates()
+                val mappedCandidates = candidatesResult.candidates.map { netCandidate ->
+                    Candidate(
+                        id = netCandidate.id,
+                        name = netCandidate.name,
+                        flag = netCandidate.flag,
+                        rank = netCandidate.rank,
+                        manifesto = netCandidate.manifesto,
+                        votes = netCandidate.votes,
+                        normalizedKc = netCandidate.normalizedKc,
+                        reputationScore = netCandidate.reputationScore
+                    )
+                }
+                if (mappedCandidates.isNotEmpty()) {
+                    _candidates.value = mappedCandidates
+                }
+                Log.d("OeofViewModel", "Live Cloud synchronization sync completed successfully.")
+            } catch (e: Exception) {
+                Log.e("OeofViewModel", "Sync failed: using offline local ledger (Reason: ${e.message})")
+            }
         }
     }
 
@@ -318,18 +449,47 @@ class MainViewModel(private val repository: OeofRepository) : ViewModel() {
 
     fun acceptOath() {
         viewModelScope.launch {
+            val emailValue = regEmail.value.ifBlank { "aryan.s@example.com" }
+            val nameValue = regName.value.ifBlank { "Aryan Sharma" }
+            val usernameValue = regUsername.value.ifBlank { "aryan.s" }
+            val territoryValue = selectedTerritory.value
+            val flagValue = selectedFlag.value
+            val selectedTraitsList = _selectedTraits.value.toList()
+
+            var finalUserId = "user_${System.currentTimeMillis()}"
+
+            try {
+                val response = apiService.register(
+                    AuthRequest(
+                        email = emailValue,
+                        username = usernameValue,
+                        name = nameValue,
+                        territory = territoryValue,
+                        flagEmoji = flagValue,
+                        traits = selectedTraitsList
+                    )
+                )
+                if (response.success && response.user != null) {
+                    finalUserId = response.user.userId
+                    Log.d("OeofViewModel", "Registered and authenticated cloud passport: $finalUserId")
+                }
+            } catch (e: Exception) {
+                Log.e("OeofViewModel", "Server offline registration fallback: ${e.message}")
+            }
+
             // Write completed, verified citizen info to Room DB
             val user = UserStatsEntity(
-                name = regName.value.ifBlank { "Aryan Sharma" },
-                username = regUsername.value.ifBlank { "aryan.s" },
-                territory = selectedTerritory.value,
-                flagEmoji = selectedFlag.value,
+                id = finalUserId,
+                name = nameValue,
+                username = usernameValue,
+                territory = territoryValue,
+                flagEmoji = flagValue,
                 rank = "Citizen",
                 knowledgeCredits = 10,  // Seed with standard welcome credits
                 contributionCredits = 5,
                 reputation = 98,
                 legacyScore = 1,
-                personalityTraits = _selectedTraits.value.joinToString(",")
+                personalityTraits = selectedTraitsList.joinToString(",")
             )
             repository.saveUserStats(user)
 
@@ -337,10 +497,14 @@ class MainViewModel(private val repository: OeofRepository) : ViewModel() {
             repository.insertNotification(
                 NotificationEntity(
                     title = "Verified Citizenship Granted",
-                    body = "Welcome to the digital civilization, Citizen @${user.username}! Your oath of alliance is recorded.",
+                    body = "Welcome to the digital civilization, Scholar @$usernameValue! Your global credentials have been verified on the server.",
                     type = "PROMOTION"
                 )
             )
+
+            // Dynamic server refresh
+            syncFromBackend()
+            reconnectWebSocket()
 
             // Transition to dashboard!
             _currentScreen.value = Screen.MAIN_APP
@@ -354,6 +518,20 @@ class MainViewModel(private val repository: OeofRepository) : ViewModel() {
             val user = repository.fetchOrCreateUser()
             var creditsAdded = 0
             var text = ""
+
+            try {
+                val response = apiService.reactToPost(
+                    postId = postId,
+                    request = ReactRequest(reactionType = reactionType, userId = user.id)
+                )
+                if (response.success) {
+                    Log.d("OeofViewModel", "Reaction synced successfully to server DB.")
+                }
+            } catch (e: Exception) {
+                Log.e("OeofViewModel", "Server reaction sync fallback (using local cache only): ${e.message}")
+            }
+
+            syncFromBackend()
 
             val updatedPosts = _posts.value.map { post ->
                 if (post.id == postId) {
@@ -440,19 +618,42 @@ class MainViewModel(private val repository: OeofRepository) : ViewModel() {
     fun publishPost(content: String, type: String) {
         viewModelScope.launch {
             val user = repository.fetchOrCreateUser()
-            val newPost = Post(
-                id = "post_${System.currentTimeMillis()}",
-                author = user.name,
-                username = user.username,
-                avatarInitials = user.name.split(" ").mapNotNull { it.firstOrNull() }.joinToString("").uppercase(),
-                territory = user.territory,
-                flag = user.flagEmoji,
-                rank = user.rank,
-                message = content,
-                type = type,
-                timeAgo = "Just now"
-            )
-            _posts.value = listOf(newPost) + _posts.value
+            var networkSuccess = false
+
+            try {
+                val response = apiService.createPost(
+                    CreatePostRequest(
+                        userId = user.id,
+                        message = content,
+                        type = type
+                    )
+                )
+                if (response.success) {
+                    networkSuccess = true
+                    Log.d("OeofViewModel", "Successfully published to cloud server: ${response.post.id}")
+                }
+            } catch (e: Exception) {
+                Log.e("OeofViewModel", "Offline broadcast mode active (Reason: ${e.message})")
+            }
+
+            if (networkSuccess) {
+                syncFromBackend()
+            } else {
+                val newPost = Post(
+                    id = "post_${System.currentTimeMillis()}",
+                    author = user.name,
+                    username = user.username,
+                    avatarInitials = user.name.split(" ").map { it.first() }.joinToString("").uppercase(),
+                    territory = user.territory,
+                    flag = user.flagEmoji,
+                    rank = user.rank,
+                    message = content,
+                    type = type,
+                    timeAgo = "Just now"
+                )
+                _posts.value = listOf(newPost) + _posts.value
+            }
+
             _showingCreatePost.value = false
 
             // Create notification confirming publication
@@ -470,6 +671,18 @@ class MainViewModel(private val repository: OeofRepository) : ViewModel() {
     fun castElectionVote(candidateId: String) {
         viewModelScope.launch {
             val user = repository.fetchOrCreateUser()
+
+            try {
+                val response = apiService.castVote(VoteRequest(candidateId, user.id))
+                if (response.success) {
+                    Log.d("OeofViewModel", "Cast vote to candidate: $candidateId synced to server")
+                }
+            } catch (e: Exception) {
+                Log.e("OeofViewModel", "Server voting offline: ${e.message}")
+            }
+
+            syncFromBackend()
+
             _candidates.value = _candidates.value.map { cand ->
                 if (cand.id == candidateId) {
                     cand.copy(votes = cand.votes + 1)

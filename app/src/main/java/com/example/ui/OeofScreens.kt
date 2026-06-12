@@ -2226,6 +2226,50 @@ fun AppearanceSettingsSheet(viewModel: MainViewModel) {
 
                 Divider()
 
+                val backendUrl by viewModel.backendUrl.collectAsState()
+                var tempUrl by remember(backendUrl) { mutableStateOf(backendUrl) }
+
+                Text("Backend Link Server Configuration", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+
+                OutlinedTextField(
+                    value = tempUrl,
+                    onValueChange = { tempUrl = it },
+                    label = { Text("Server Base URL") },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    trailingIcon = {
+                        IconButton(onClick = { viewModel.updateBackendUrl(tempUrl) }) {
+                            Icon(Icons.Default.Sync, contentDescription = "Sync dynamic connection")
+                        }
+                    }
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = { viewModel.updateBackendUrl(tempUrl) },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text("Connect & Sync")
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            tempUrl = "http://10.0.2.2:8080"
+                            viewModel.updateBackendUrl(tempUrl)
+                        },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text("Set Local Loopback")
+                    }
+                }
+
+                Divider()
+
                 Text("Citizen Standing Stats", fontWeight = FontWeight.Bold, fontSize = 13.sp)
 
                 Row(
