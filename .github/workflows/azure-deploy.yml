@@ -35,12 +35,15 @@ jobs:
         # - dist/ (compiled output)
         # - package.json
         # - package-lock.json (if exists)
-        # We exclude devDependencies during deployment to optimize bundle size and speed.
+        # - node_modules/ (production dependencies only)
+        # This allows the app to start instantly on Azure without needing a separate Oryx build step on the server.
         run: |
           mkdir -p release
           cp -r dist release/
           cp package.json release/
           [ -f package-lock.json ] && cp package-lock.json release/ || true
+          cd release
+          npm install --omit=dev
 
       - name: Upload Artifact for Deployment Job
         uses: actions/upload-artifact@v4
