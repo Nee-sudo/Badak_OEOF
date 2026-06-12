@@ -1,0 +1,6 @@
+{
+  "name": "One Earth One Family",
+  "description": "A living digital civilization built on earned meritocratic leadership, personal contribution scores, and global unity.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
