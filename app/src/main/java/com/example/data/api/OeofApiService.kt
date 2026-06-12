@@ -200,10 +200,14 @@ interface OeofApiService {
 
             val baseUrl = customBaseUrl ?: CLOUD_URL
 
+            val moshi = com.squareup.moshi.Moshi.Builder()
+                .addLast(com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory())
+                .build()
+
             return Retrofit.Builder()
                 .baseUrl("$baseUrl/")
                 .client(client)
-                .addConverterFactory(MoshiConverterFactory.create())
+                .addConverterFactory(MoshiConverterFactory.create(moshi))
                 .build()
                 .create(OeofApiService::class.java)
         }
